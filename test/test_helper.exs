@@ -10,4 +10,7 @@ defmodule Guardian.TestHelper do
   end
 end
 
-ExUnit.start()
+Code.require_file("support/line_buffered_io.exs", __DIR__)
+Guardian.Test.LineBufferedIO.install()
+
+ExUnit.start(max_cases: 2)
