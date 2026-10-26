@@ -16,6 +16,22 @@
   for custom plugs. A `:secret` function of any other arity raises an
   `ArgumentError` instead of reaching the token module.
 
+* `Guardian.Plug.sign_in/5`, `Guardian.Plug.remember_me/5`,
+  `Guardian.Plug.remember_me_from_token/5` and `Guardian.Plug.SlidingCookie`
+  accept the same connection aware `:secret`, so tokens an application issues
+  for a tenant are signed with that tenant's secret. `SlidingCookie` resolves it
+  once to verify the current cookie and to sign its replacement. A secret that
+  resolves to `nil` fails closed: nothing is issued and the error handler
+  receives `{:unauthenticated, {:error, :secret_not_found}}`, and
+  `SlidingCookie` leaves the request untouched.
+
+      MyApp.Guardian.Plug.sign_in(conn, user, %{}, secret: &MyApp.Secrets.for_conn/1)
+
+  `Guardian.Plug.sign_out/3` does not resolve a function `:secret`. Revoking a
+  tenant's token needs a fixed secret, such as
+  `secret: MyApp.Secrets.for_conn(conn)`; a function is passed to the token
+  module unresolved and raises while the token is verified.
+
 ### Changed
 
 * **Behaviour change.** `Guardian.Token.Jwt` no longer falls back to the

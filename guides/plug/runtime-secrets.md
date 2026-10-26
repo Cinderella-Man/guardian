@@ -100,6 +100,45 @@ Guardian versions before this behaviour change did fall back. If you were select
 runtime with a wrapper plug, check whether your code relied on that fallback for requests with no
 tenant.
 
+## Issuing tokens with a per request secret
+
+When your application issues its own tokens for a tenant, sign them with the same secret the verify
+plugs will later use. `Guardian.Plug.sign_in/5`, `Guardian.Plug.remember_me/5` and
+`Guardian.Plug.remember_me_from_token/5` accept the same `:secret` option, including the one
+argument function form:
+
+```elixir
+conn
+|> MyApp.Guardian.Plug.sign_in(user, %{}, secret: &MyApp.Secrets.for_conn/1)
+|> MyApp.Guardian.Plug.remember_me(user, %{}, secret: &MyApp.Secrets.for_conn/1)
+```
+
+`remember_me_from_token/5` verifies the token it is given and signs the new cookie with the secret
+resolved for the request.
+
+`Guardian.Plug.SlidingCookie` both verifies the current cookie and issues its replacement, so it
+takes the option too. It resolves the secret once, only when a cookie is present, and uses it on
+both sides:
+
+```elixir
+plug Guardian.Plug.SlidingCookie, secret: &MyApp.Secrets.for_conn/1
+```
+
+A `nil` secret fails closed here as well. `sign_in` and the `remember_me` functions issue nothing
+and call your error handler with `{:unauthenticated, {:error, :secret_not_found}}`, or raise
+`Guardian.Plug.UnauthenticatedError` when there is none. `SlidingCookie` leaves the request
+untouched: it never re-signs a tenant's cookie with the application wide secret.
+
+`Guardian.Plug.sign_out/3` does not take the function form. Revocation verifies the token, so a
+tenant's token needs the tenant's secret there, passed as a fixed value:
+
+```elixir
+MyApp.Guardian.Plug.sign_out(conn, secret: MyApp.Secrets.for_conn(conn))
+```
+
+A function given to `sign_out` reaches the token module unresolved and raises while the token is
+verified.
+
 ## Other option forms
 
 `:secret` also accepts a `{module, function, args}` tuple, resolved by
@@ -141,8 +180,8 @@ end
 config :my_app, MyApp.Guardian, secret_fetcher: MyApp.SecretFetcher
 ```
 
-Unlike the plug option, a secret fetcher also covers token creation and applies everywhere the
-implementation module is used, not only behind a plug.
+A secret fetcher applies everywhere the implementation module is used, not only behind a plug or
+in the `Guardian.Plug` functions that take a connection.
 
 ## Which one to reach for
 

@@ -56,6 +56,17 @@ if Code.ensure_loaded?(Plug) do
       will be issued. Defaults to configured values.
     * `:halt` - Whether to halt the connection in case of error. Defaults to `true`.
 
+    Any other option is forwarded to `Guardian.decode_and_verify/4` and `Guardian.Plug.remember_me/5`,
+    and from there to the token module. For `Guardian.Token.Jwt` this includes:
+
+    * `secret` - The secret used to verify the current cookie and to sign its replacement,
+      overriding the implementation module's `:secret_key` configuration. Accepts a
+      `{module, function, args}` tuple, or a one argument function that receives the connection
+      and returns the secret. The function is called once, and only when a cookie token is
+      found. When the secret cannot be found (it is or resolves to `nil`), the cookie is not
+      verified and no replacement is issued. See `Guardian.Plug.resolve_secret/2` and
+      [Runtime secrets](plug-runtime-secrets.html).
+
     The `:sliding_cookie` config (or plug option) should be the same format as `:ttl`, for example
     `{1, :hour}`, and obviously it should be less than the prevailing `:ttl`.
     """
@@ -85,12 +96,13 @@ if Code.ensure_loaded?(Plug) do
       with {:ok, token} <- find_token_from_cookies(conn, opts),
            module <- Pipeline.fetch_module!(conn, opts),
            {:ok, ttl_softlimit} <- sliding_window(module, opts),
-           {:ok, %{"exp" => exp} = claims} <- decode_and_verify(module, token, %{}, opts),
+           token_opts <- Guardian.Plug.resolve_secret(conn, opts),
+           {:ok, %{"exp" => exp} = claims} <- decode_and_verify(module, token, %{}, token_opts),
            {:ok, resource} <- module.resource_from_claims(claims),
            true <- timestamp() >= exp - ttl_softlimit,
            {:ok, new_c} <- module.sliding_cookie(claims, resource, opts) do
         conn
-        |> Guardian.Plug.remember_me(module, resource, proc_new_claims(new_c, claims), opts)
+        |> Guardian.Plug.remember_me(module, resource, proc_new_claims(new_c, claims), token_opts)
       else
         {:error, :not_implemented} ->
           conn

@@ -35,6 +35,16 @@ if Code.ensure_loaded?(Plug) do
 
     If there is a session present the token will be stored in the session
     to provide traditional session based authentication.
+
+    `sign_in`, `remember_me` and `remember_me_from_token` accept the same
+    connection aware `:secret` option as the verify plugs, so a token can be
+    signed with a secret selected for the current request:
+
+    ```elixir
+    conn = MyApp.Guardian.Plug.sign_in(conn, resource, %{}, secret: &MyApp.Secrets.for_conn/1)
+    ```
+
+    See `resolve_secret/2`.
     """
 
     defmodule UnauthenticatedError do
@@ -149,8 +159,14 @@ if Code.ensure_loaded?(Plug) do
     configured on `:refresh_from_cookie`. Keep it a cheap read off the connection and do any
     loading or parsing in an upstream plug.
 
-    The verify plugs call this on your behalf. It is public so that custom plugs can offer the
-    same option.
+    The same option applies when tokens are issued. `sign_in/5`, `remember_me/5` and
+    `remember_me_from_token/5` resolve it before signing, and `Guardian.Plug.SlidingCookie`
+    resolves it once to verify the current cookie and to sign its replacement. A tenant's tokens
+    are therefore signed and verified with the same per request secret, and a `nil` result fails
+    closed on both sides.
+
+    The verify plugs and the issuing functions call this on your behalf. It is public so that
+    custom plugs can offer the same option.
     """
     @spec resolve_secret(Plug.Conn.t(), Guardian.options()) :: Guardian.options()
     def resolve_secret(conn, opts) do
@@ -245,7 +261,8 @@ if Code.ensure_loaded?(Plug) do
 
     @spec sign_in(Plug.Conn.t(), module, any, Guardian.Token.claims(), Guardian.options()) :: Plug.Conn.t()
     def sign_in(conn, impl, resource, claims \\ %{}, opts \\ []) do
-      with {:ok, token, full_claims} <- Guardian.encode_and_sign(impl, resource, claims, opts),
+      with sign_opts <- resolve_secret(conn, opts),
+           {:ok, token, full_claims} <- Guardian.encode_and_sign(impl, resource, claims, sign_opts),
            {:ok, conn} <- add_data_to_conn(conn, resource, token, full_claims, opts),
            {:ok, conn} <- returning_tuple({impl, :after_sign_in, [conn, resource, token, full_claims, opts]}) do
         if session_active?(conn) do
@@ -307,6 +324,9 @@ if Code.ensure_loaded?(Plug) do
     If the token does not have an exp,t the default will be 30 days.
 
     The max age can be overridden by setting the cookie option config.
+
+    A one argument `:secret` function is called with the connection to select the
+    signing secret. See `resolve_secret/2`.
     """
 
     @spec remember_me(Plug.Conn.t(), module, any, Guardian.Token.claims(), Guardian.options()) :: Plug.Conn.t()
@@ -314,7 +334,7 @@ if Code.ensure_loaded?(Plug) do
       opts = Keyword.put_new(opts, :token_type, "refresh")
       key = fetch_token_key(conn, opts)
 
-      case Guardian.encode_and_sign(mod, resource, claims, opts) do
+      case Guardian.encode_and_sign(mod, resource, claims, resolve_secret(conn, opts)) do
         {:ok, token, new_claims} ->
           put_resp_cookie(conn, key, token, cookie_options(mod, new_claims))
 
@@ -323,6 +343,13 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
+    @doc """
+    Verifies `token` and sets a token of type refresh, exchanged from it, on a cookie.
+
+    A one argument `:secret` function is called once with the connection, and the
+    secret it returns is used both to verify `token` and to sign the new one. See
+    `resolve_secret/2`.
+    """
     @spec remember_me_from_token(
             Plug.Conn.t(),
             module,
@@ -334,8 +361,9 @@ if Code.ensure_loaded?(Plug) do
       token_type = Keyword.get(opts, :token_type, "refresh")
       key = fetch_token_key(conn, opts)
 
-      with {:ok, claims} <- Guardian.decode_and_verify(mod, token, claims_to_check, opts),
-           {:ok, _old, {new_t, full_new_c}} <- Guardian.exchange(mod, token, claims["typ"], token_type, opts) do
+      with token_opts <- resolve_secret(conn, opts),
+           {:ok, claims} <- Guardian.decode_and_verify(mod, token, claims_to_check, token_opts),
+           {:ok, _old, {new_t, full_new_c}} <- Guardian.exchange(mod, token, claims["typ"], token_type, token_opts) do
         put_resp_cookie(conn, key, new_t, cookie_options(mod, full_new_c))
       else
         {:error, _} = err -> handle_unauthenticated(conn, err, opts)
